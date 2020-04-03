@@ -17,7 +17,7 @@
 // glm::translate, glm::rotate, glm::perspective
 
 // Libstd includes;
-#include <cmath> // std::abs
+#include <cmath> // std::abs, std::lerp
 #include <array>
 #include <vector>
 
@@ -62,6 +62,20 @@ struct Mesh
     std::vector<glm::vec3> vertices;
     std::vector<Face> faces;
 };
+
+
+namespace std {
+    // std::lerp is only available from c++17
+    constexpr float clamp(float v, float lo, float hi)
+    {
+        return (v < lo) ? lo : (hi < v) ? hi : v;
+    }
+
+    // std::lerp is only available from c++20
+    constexpr float lerp(float a, float b, float t) {
+        return a + clamp(t, 0, 1)*(b-a);
+    }
+}
 
 class Device
 {
@@ -135,6 +149,121 @@ public:
         }
     }
 
+    void processScanline(uint16_t y,
+                         glm::vec3 pa, glm::vec3 pb, glm::vec3 pc, glm::vec3 pd,
+                         color4 c)
+    {
+        // Thanks to current Y, we can compute the gradient to compute others values like
+        // the starting X (sx) and ending X (ex) to draw between
+        // if pa.Y == pb.Y or pc.Y == pd.Y, gradient is forced to 1
+        const auto gradient1 = (pa.y != pb.y) ? (y - pa.y) / (pb.y - pa.y) : 1;
+        const auto gradient2 = (pc.y != pd.y) ? (y - pc.y) / (pd.y - pc.y) : 1;
+
+        // Note: std::lerp for "interpolate"
+        // See: https://en.cppreference.com/w/cpp/numeric/lerp
+        const uint16_t sx = static_cast<uint16_t>(std::lerp(pa.x, pb.x, gradient1));
+        const uint16_t ex = static_cast<uint16_t>(std::lerp(pc.x, pd.x, gradient2));
+
+        // drawing a line from left (sx) to right (ex)
+        for(auto x = sx; x < ex; x++)
+        {
+            drawPoint(glm::vec2(x, y), c);
+        }
+    }
+
+    void drawTriangle(glm::vec3 p1, glm::vec3 p2, glm::vec3 p3, color4 c)
+    {
+        // Sorting the points in order to always have this order on screen p1, p2 & p3
+        // with p1 always up (thus having the Y the lowest possible to be near the top screen)
+        // then p2 between p1 & p3
+        if(p1.y > p2.y)
+        {
+            const auto temp = p2;
+            p2 = p1;
+            p1 = temp;
+        }
+
+        if(p2.y > p3.y)
+        {
+            const auto temp = p2;
+            p2 = p3;
+            p3 = temp;
+        }
+
+        if(p1.y > p2.y)
+        {
+            const auto temp = p2;
+            p2 = p1;
+            p1 = temp;
+        }
+
+        // inverse slopes
+        float dP1P2, dP1P3;
+
+        // http://en.wikipedia.org/wiki/Slope
+        // Computing inverse slopes
+        if(p2.y - p1.y > 0)
+            dP1P2 = (p2.x - p1.x) / (p2.y - p1.y);
+        else
+            dP1P2 = 0;
+
+        if (p3.y - p1.y > 0)
+            dP1P3 = (p3.x - p1.x) / (p3.y - p1.y);
+        else
+            dP1P3 = 0;
+
+        // First case where triangles are like that:
+        // P1
+        // -
+        // --
+        // - -
+        // -  -
+        // -   - P2
+        // -  -
+        // - -
+        // -
+        // P3
+        if(dP1P2 > dP1P3)
+        {
+            for(auto y = static_cast<uint16_t>(p1.y); y <= static_cast<uint16_t>(p3.y); y++)
+            {
+                if(y < p2.y)
+                {
+                    processScanline(y, p1, p3, p1, p2, c);
+                }
+                else
+                {
+                    processScanline(y, p1, p3, p2, p3, c);
+                }
+            }
+        }
+        // Second case where triangles are like that:
+        //       P1
+        //        -
+        //       --
+        //      - -
+        //     -  -
+        // P2 -   -
+        //     -  -
+        //      - -
+        //        -
+        //       P3
+        else
+        {
+            for(auto y = static_cast<uint16_t>(p1.y); y <= static_cast<uint16_t>(p3.y); y++)
+            {
+                if(y < p2.y)
+                {
+                    processScanline(y, p1, p2, p1, p3, c);
+                }
+                else
+                {
+                    processScanline(y, p2, p3, p1, p3, c);
+                }
+            }
+        }
+    }
+
     // The main method of the engine that re-compute each vertex projection during each frame
     void render(Camera camera, std::vector<Mesh> meshes)
     {
@@ -164,6 +293,7 @@ public:
             // …but GLM project function expects ModelView and Projection matrices separately
             const auto mvMat = viewMat * modelMat;
 
+            uint16_t faceIdx = 0;
             for(const auto face : mesh.faces)
             {
                 const auto vertexA = mesh.vertices[face.a];
@@ -174,9 +304,9 @@ public:
                 const auto pixelB = glm::project(vertexB, mvMat, projMat, viewport);
                 const auto pixelC = glm::project(vertexC, mvMat, projMat, viewport);
 
-                drawLine(pixelA, pixelB);
-                drawLine(pixelB, pixelC);
-                drawLine(pixelC, pixelA);
+                const bool alt = (faceIdx % 2 == 0);
+                drawTriangle(pixelA, pixelB, pixelC, {alt ? 255 : 0, 0, alt ? 0 : 255, 255});
+                faceIdx++;
             }
         }
     }
