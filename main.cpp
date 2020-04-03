@@ -17,7 +17,8 @@
 // glm::translate, glm::rotate, glm::perspective
 
 // Libstd includes;
-#include <cmath> // std::abs, std::lerp
+#include <limits>   // std::numeric_limits
+#include <cmath>    // std::abs, std::lerp
 #include <array>
 #include <vector>
 
@@ -91,6 +92,7 @@ public:
         , m_renderer( SDL_CreateRenderer(
               m_window, -1,
               SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC) )
+        , m_depthBuffer(m_winWidth * m_winHeight, std::numeric_limits<float>::max())
     { }
 
     ~Device()
@@ -104,6 +106,12 @@ public:
     {
         SDL_SetRenderDrawColor(m_renderer, c.r, c.g, c.b, c.a);
         SDL_RenderClear(m_renderer);
+
+        // clear depth buffer (aka z-buffer)
+        for(uint32_t i = 0; i < m_depthBuffer.size(); i++)
+        {
+            m_depthBuffer[i] = std::numeric_limits<float>::max();
+        }
     }
 
     // Once everything is ready, we can flush the back buffer into the front buffer
@@ -113,16 +121,20 @@ public:
     }
 
     // DrawPoint calls PutPixel but does the clipping operation before
-    void drawPoint(glm::vec2 p, color4 c)
+    void drawPoint(glm::vec3 p, color4 c)
     {
         if(p.x >= 0 && p.y >= 0 &&
            p.x < m_winWidth &&
            p.y < m_winHeight      )
         {
-            putPixel(static_cast<uint16_t>(p.x), static_cast<uint16_t>(p.y), c);
+            putPixel(static_cast<uint16_t>(p.x),
+                     static_cast<uint16_t>(p.y),
+                     p.z,
+                     c);
         }
     }
 
+    /*
     void drawLine(glm::vec2 p0, glm::vec2 p1)
     {
         // Bresenham's line algorithm
@@ -148,6 +160,7 @@ public:
             if (e2 < dx) { err += dx; y0 += sy; }
         }
     }
+    */
 
     void processScanline(uint16_t y,
                          glm::vec3 pa, glm::vec3 pb, glm::vec3 pc, glm::vec3 pd,
@@ -164,10 +177,17 @@ public:
         const uint16_t sx = static_cast<uint16_t>(std::lerp(pa.x, pb.x, gradient1));
         const uint16_t ex = static_cast<uint16_t>(std::lerp(pc.x, pd.x, gradient2));
 
+        // starting Z & ending Z
+        const float z1 = std::lerp(pa.z, pb.z, gradient1);
+        const float z2 = std::lerp(pc.z, pd.z, gradient2);
+
         // drawing a line from left (sx) to right (ex)
         for(auto x = sx; x < ex; x++)
         {
-            drawPoint(glm::vec2(x, y), c);
+            const float gradient = (x - sx) / static_cast<float>(ex - sx);
+            const float z = std::lerp(z1, z2, gradient);
+
+            drawPoint(glm::vec3(x, y, z), c);
         }
     }
 
@@ -313,8 +333,16 @@ public:
 
 private:
     // Called to put a pixel on screen at a specific X,Y coordinates
-    void putPixel(uint16_t x, uint16_t y, color4 c)
+    void putPixel(uint16_t x, uint16_t y, float z, color4 c)
     {
+        const auto idx = x + y*m_winWidth;
+
+        if(m_depthBuffer[idx] < z)
+        {
+            return; // Discard
+        }
+        m_depthBuffer[idx] = z;
+
         SDL_SetRenderDrawColor(m_renderer, c.r, c.g, c.b, c.a);
         SDL_RenderDrawPoint(m_renderer, x, y);
     }
@@ -326,6 +354,10 @@ private:
 private:
     SDL_Window *m_window;
     SDL_Renderer *m_renderer;
+
+private:
+    std::vector<float> m_depthBuffer;
+    // Note: this needs to be the same type as inside glm::vec3
 };
 
 int main(int /*argc*/, char **/*argv*/)
