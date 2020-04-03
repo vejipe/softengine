@@ -17,6 +17,7 @@
 // glm::translate, glm::rotate, glm::perspective
 
 // Libstd includes;
+#include <cmath> // std::abs
 #include <array>
 #include <vector>
 
@@ -46,11 +47,20 @@ struct Camera
     glm::vec3 target;
 };
 
+struct Face
+{
+    uint16_t a;
+    uint16_t b;
+    uint16_t c;
+};
+// Note: with uint16, a mesh cannot exceed 65535 vertices
+
 struct Mesh
 {
     glm::vec3 position;
     glm::vec3 rotation;
     std::vector<glm::vec3> vertices;
+    std::vector<Face> faces;
 };
 
 class Device
@@ -99,6 +109,32 @@ public:
         }
     }
 
+    void drawLine(glm::vec2 p0, glm::vec2 p1)
+    {
+        // Bresenham's line algorithm
+        // https://en.wikipedia.org/wiki/Bresenham's_line_algorithm
+
+              auto x0 = static_cast<uint16_t>(p0.x);
+              auto y0 = static_cast<uint16_t>(p0.y);
+        const auto x1 = static_cast<uint16_t>(p1.x);
+        const auto y1 = static_cast<uint16_t>(p1.y);
+
+        const auto dx = std::abs(x1 - x0);
+        const auto dy = std::abs(y1 - y0);
+        const auto sx = (x0 < x1) ? 1 : -1;
+        const auto sy = (y0 < y1) ? 1 : -1;
+        auto err = dx - dy;
+
+        while (true) {
+            drawPoint(glm::vec2(x0, y0), {255, 255, 255, 255});
+
+            if ((x0 == x1) && (y0 == y1)) break;
+            const auto e2 = 2 * err;
+            if (e2 > -dy) { err -= dy; x0 += sx; }
+            if (e2 < dx) { err += dx; y0 += sy; }
+        }
+    }
+
     // The main method of the engine that re-compute each vertex projection during each frame
     void render(Camera camera, std::vector<Mesh> meshes)
     {
@@ -112,13 +148,13 @@ public:
             1.0f
         );
 
-        for(const auto &m : meshes)
+        for(const auto &mesh : meshes)
         {
             // Beware to apply rotation before translation
-            const auto transMat = glm::translate(glm::mat4(1.0f), m.position);
-            const auto rotXMat = glm::rotate(transMat, m.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
-            const auto rotYMat = glm::rotate(rotXMat, m.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
-            const auto rotZMat = glm::rotate(rotYMat, m.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+            const auto transMat = glm::translate(glm::mat4(1.0f), mesh.position);
+            const auto rotXMat = glm::rotate(transMat, mesh.rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+            const auto rotYMat = glm::rotate(rotXMat, mesh.rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+            const auto rotZMat = glm::rotate(rotYMat, mesh.rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
             const auto modelMat = rotZMat;
             // Note1: the tutorial names this matrice "worldMatrice".
             // Giving up the nice Futurama quote, and naming it "modelMatrice" to follow GDM examples.
@@ -128,13 +164,19 @@ public:
             // …but GLM project function expects ModelView and Projection matrices separately
             const auto mvMat = viewMat * modelMat;
 
-            for(const auto v : m.vertices)
+            for(const auto face : mesh.faces)
             {
-                // Project takes some 3D coordinates and transform them
-                // in 2D coordinates using the transformation matrix
-                const auto p = glm::project(v, mvMat, projMat, viewport);
-                // Then we can draw on screen
-                drawPoint(p, {255, 255, 255, 255});
+                const auto vertexA = mesh.vertices[face.a];
+                const auto vertexB = mesh.vertices[face.b];
+                const auto vertexC = mesh.vertices[face.c];
+
+                const auto pixelA = glm::project(vertexA, mvMat, projMat, viewport);
+                const auto pixelB = glm::project(vertexB, mvMat, projMat, viewport);
+                const auto pixelC = glm::project(vertexC, mvMat, projMat, viewport);
+
+                drawLine(pixelA, pixelB);
+                drawLine(pixelB, pixelC);
+                drawLine(pixelC, pixelA);
             }
         }
     }
@@ -171,14 +213,29 @@ int main(int /*argc*/, char **/*argv*/)
         {0, 0, 0},  /* position */
         {0, 0, 0},  /* rotation */
         {           /* vertices */
-            {-1,  1,  1}, // 0
-            { 1,  1,  1}, // 1
-            {-1, -1,  1}, // 2
-            {-1, -1, -1}, // 3
-            {-1,  1, -1}, // 4
-            { 1,  1, -1}, // 5
-            { 1, -1,  1}, // 6
-            { 1, -1, -1}  // 7
+            {-1,  1,  1},   // 0
+            { 1,  1,  1},   // 1
+            {-1, -1,  1},   // 2
+            { 1, -1,  1},   // 3
+            {-1,  1, -1},   // 4
+            { 1,  1, -1},   // 5
+            { 1, -1, -1},   // 6
+            {-1, -1, -1}    // 7
+        },
+        {
+            {0, 1, 2},      // 0
+            {1, 2, 3},      // 1
+            {1, 3, 6},      // 2
+            {1, 5, 6},      // 3
+            {0, 1, 4},      // 4
+            {1, 4, 5},      // 5
+
+            {2, 3, 7},      // 6
+            {3, 6, 7},      // 7
+            {0, 2, 7},      // 8
+            {0, 4, 7},      // 9
+            {4, 5, 6},      // 10
+            {4, 6, 7}       // 11
         }
     };
 
