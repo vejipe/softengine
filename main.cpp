@@ -16,15 +16,20 @@
 #include <glm/gtc/matrix_transform.hpp>
 // glm::translate, glm::rotate, glm::perspective
 
+// Taocpp/json includes:
+#include <tao/json.hpp>
+#include <tao/json/contrib/traits.hpp>
+// Note: documentation at https://github.com/taocpp/json/blob/master/doc/Common-Use-Cases.md
+
 // Libstd includes;
 #include <limits>   // std::numeric_limits
 #include <cmath>    // std::abs, std::lerp
+#include <string>
 #include <array>
 #include <vector>
 
 // SDL includes:
 #include <SDL2/SDL.h>
-
 // Note: SDL documentation for each function name at:
 // https://wiki.libsdl.org/SDL_CreateRenderer
 //                         ^^^^^^^^^^^^^^^^^^ function name
@@ -76,6 +81,77 @@ namespace std {
     constexpr float lerp(float a, float b, float t) {
         return a + clamp(t, 0, 1)*(b-a);
     }
+}
+
+// Loading the JSON file in an asynchronous manner
+std::vector<Mesh> loadJsonMesh(std::string filename)
+{
+    std::vector<Mesh> meshes;
+    const tao::json::value json = tao::json::from_file(filename);
+
+    // Note: How to access values in JSON
+    // https://github.com/taocpp/json/blob/master/doc/Value-Class.md#accessing-values
+    const auto meshesJson = json.at("meshes").get_array();
+    for(uint32_t meshIdx = 0; meshIdx < meshesJson.size(); meshIdx++)
+    {
+        const auto vertices = meshesJson.at(meshIdx).as<std::vector<float>>("vertices");
+        const auto indices  = meshesJson.at(meshIdx).as<std::vector<uint32_t>>("indices");
+        // Note: in Babylon, indices = faces
+
+        const auto uvCount = meshesJson.at(meshIdx).as<uint32_t>("uvCount");
+
+        // Depending of the number of texture's coordinates per vertex
+        // we're jumping in the vertices array by 6, 8 & 10 windows frame
+        uint32_t verticesStep = 1;
+        switch(uvCount)
+        {
+            case 0:
+                verticesStep = 6;
+                break;
+            case 1:
+                verticesStep = 8;
+                break;
+            case 2:
+                verticesStep = 10;
+                break;
+        }
+
+        // the number of interesting vertices information for us
+        const auto verticesCount = vertices.size() / verticesStep;
+        // number of faces is logically the size of the array divided by 3 (A, B, C)
+        const auto facesCount = indices.size() / 3;
+
+        Mesh mesh;
+
+        // Filling the vertices array of our mesh first
+        for(uint32_t i=0; i < verticesCount; i++)
+        {
+            const auto x = vertices.at(i * verticesStep);
+            const auto y = vertices.at(i * verticesStep + 1);
+            const auto z = vertices.at(i * verticesStep + 2);
+            mesh.vertices.push_back( {x, y, z} );
+        }
+
+        // Then filling the Faces array
+        for(uint32_t i=0; i < facesCount; i++)
+        {
+            const auto a = indices.at(i * 3);
+            const auto b = indices.at(i * 3 + 1);
+            const auto c = indices.at(i * 3 + 2);
+            mesh.faces.push_back( {a, b, c } );
+        }
+
+        // Getting the position you have set in Blender
+        const auto position = meshesJson.at(meshIdx).as<std::vector<float>>("position");
+        mesh.position = { position.at(0), position.at(1), position.at(2) };
+
+        // TODO: do the same for rotation
+        mesh.rotation = { 0, 0, 0 };
+
+        meshes.push_back(mesh);
+    }
+
+    return meshes;
 }
 
 class Device
@@ -400,8 +476,9 @@ int main(int /*argc*/, char **/*argv*/)
             {4, 6, 7}       // 11
         }
     };
+    //std::vector<Mesh> meshes = { cube };
 
-    std::vector<Mesh> meshes = { cube };
+    std::vector<Mesh> meshes = loadJsonMesh("data/cube.babylon");
 
     // Rendering loop
     while(true)
