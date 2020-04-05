@@ -2,6 +2,7 @@
 // # For SDL2 devel (Simple DirectMedia Library)
 // # http://www.libsdl.org
 // sudo apt install libsdl2-dev
+// #
 // # For GLM devel header (OpenGL Mathematics)
 // # https://glm.g-truc.net
 // sudo apt install libglm-dev
@@ -37,6 +38,7 @@
 // Inspired from:
 // https://www.davrous.com/2013/06/13/tutorial-series-learning-how-to-write-a-3d-soft-engine-from-scratch-in-c-typescript-or-javascript/
 // https://www.opengl-tutorial.org/beginners-tutorials/tutorial-3-matrices/
+// https://open.gl/transformations
 
 // RGBA_8888 = 32 bits / pixel
 struct color4
@@ -61,14 +63,31 @@ struct Face
 };
 // Note: with uint16, a mesh cannot exceed 65535 vertices
 
+struct Vertex
+{
+    glm::vec3 coordinates;
+    glm::vec3 worldCoordinates; // 3D projected coordinates
+    glm::vec3 normal;           // vertex normal for Gouraud shading
+};
+
 struct Mesh
 {
     glm::vec3 position;
     glm::vec3 rotation;
-    std::vector<glm::vec3> vertices;
+    std::vector<Vertex> vertices;
     std::vector<Face> faces;
+    glm::vec2 textureCoord;
 };
 
+struct ScanLineData
+{
+    uint16_t currentY;
+
+    float nDotLa;
+    float nDotLb;
+    float nDotLc;
+    float nDotLd;
+};
 
 namespace std {
     // std::lerp is only available from c++17
@@ -129,7 +148,16 @@ std::vector<Mesh> loadJsonMesh(std::string filename)
             const auto x = vertices.at(i * verticesStep);
             const auto y = vertices.at(i * verticesStep + 1);
             const auto z = vertices.at(i * verticesStep + 2);
-            mesh.vertices.push_back( {x, y, z} );
+            // Loading the vertex normal exported by Blender
+            const auto nx = vertices.at(i * verticesStep + 3);
+            const auto ny = vertices.at(i * verticesStep + 4);
+            const auto nz = vertices.at(i * verticesStep + 5);
+
+            mesh.vertices.push_back({
+                { x,  y,  z},  // coordinates
+                { 0,  0,  0},  // worldCoordinates (to be filled later)
+                {nx, ny, nz}   // normal
+            });
         }
 
         // Then filling the Faces array
@@ -210,7 +238,7 @@ public:
         }
     }
 
-    /*
+    /* TODO: to be updated
     void drawLine(glm::vec2 p0, glm::vec2 p1)
     {
         // Bresenham's line algorithm
@@ -238,13 +266,23 @@ public:
     }
     */
 
-    void processScanline(uint16_t y,
-                         glm::vec3 pa, glm::vec3 pb, glm::vec3 pc, glm::vec3 pd,
+    // drawing line between 2 points from left to right
+    // papb -> pcpd
+    // pa, pb, pc, pd must then be sorted before
+    // Note: "processScanLine" can be seen as a "pixel shader"
+    void processScanline(ScanLineData data,
+                         Vertex va, Vertex vb, Vertex vc, Vertex vd,
                          color4 c)
     {
+        const auto pa = va.coordinates;
+        const auto pb = vb.coordinates;
+        const auto pc = vc.coordinates;
+        const auto pd = vd.coordinates;
+
         // Thanks to current Y, we can compute the gradient to compute others values like
         // the starting X (sx) and ending X (ex) to draw between
         // if pa.Y == pb.Y or pc.Y == pd.Y, gradient is forced to 1
+        const auto y = data.currentY;
         const auto gradient1 = (pa.y != pb.y) ? (y - pa.y) / (pb.y - pa.y) : 1;
         const auto gradient2 = (pc.y != pd.y) ? (y - pc.y) / (pd.y - pc.y) : 1;
 
@@ -261,39 +299,76 @@ public:
         for(auto x = sx; x < ex; x++)
         {
             const float gradient = (x - sx) / static_cast<float>(ex - sx);
-            const float z = std::lerp(z1, z2, gradient);
 
-            drawPoint(glm::vec3(x, y, z), c);
+            const float z = std::lerp(z1, z2, gradient);
+            const auto nDotL = data.nDotLa;
+
+            // changing the color value using the cosine of the angle
+            // between the light vector and the normal vector
+            drawPoint(
+                glm::vec3(x, y, z),
+                { c.r * nDotL, c.g * nDotL, c.b * nDotL, c.a * nDotL }
+            );
         }
     }
 
-    void drawTriangle(glm::vec3 p1, glm::vec3 p2, glm::vec3 p3, color4 c)
+    // Compute the cosine of the angle between the light vector and the normal vector
+    // Returns a value between 0 and 1
+    float computeNDotL(glm::vec3 vertex, glm::vec3 normal, glm::vec3 lightPosition)
+    {
+        auto lightDirection = lightPosition - vertex;
+
+        normal = glm::normalize(normal);
+        lightDirection = glm::normalize(lightDirection);
+
+        return std::max(0.0f, glm::dot(normal, lightDirection));
+    }
+
+    void drawTriangle(Vertex v1, Vertex v2, Vertex v3, color4 c)
     {
         // Sorting the points in order to always have this order on screen p1, p2 & p3
         // with p1 always up (thus having the Y the lowest possible to be near the top screen)
         // then p2 between p1 & p3
-        if(p1.y > p2.y)
+        // Note: 'pX' became 'vX'
+        if(v1.coordinates.y > v2.coordinates.y)
         {
-            const auto temp = p2;
-            p2 = p1;
-            p1 = temp;
+            const auto temp = v2;
+            v2 = v1;
+            v1 = temp;
         }
 
-        if(p2.y > p3.y)
+        if(v2.coordinates.y > v3.coordinates.y)
         {
-            const auto temp = p2;
-            p2 = p3;
-            p3 = temp;
+            const auto temp = v2;
+            v2 = v3;
+            v3 = temp;
         }
 
-        if(p1.y > p2.y)
+        if(v1.coordinates.y > v2.coordinates.y)
         {
-            const auto temp = p2;
-            p2 = p1;
-            p1 = temp;
+            const auto temp = v2;
+            v2 = v1;
+            v1 = temp;
         }
 
-        // inverse slopes
+        const auto p1 = v1.coordinates;
+        const auto p2 = v2.coordinates;
+        const auto p3 = v3.coordinates;
+
+        // normal face's vector is the average normal between each vertex's normal
+        // computing also the center point of the face
+        const auto vnFace = (v1.normal + v2.normal + v3.normal) / 3.0f;
+        const auto centerPoint = (v1.worldCoordinates + v2.worldCoordinates + v3.worldCoordinates) / 3.0f;
+        // Light position
+        const auto lightPos = glm::vec3(0, 10, 10);
+        // TODO: read this from scene file
+        // computing the cos of the angle between the light vector and the normal vector
+        // it will return a value between 0 and 1 that will be used as the intensity of the color
+        const auto ndotl = computeNDotL(centerPoint, vnFace, lightPos);
+
+        ScanLineData data{ 0, ndotl, 0, 0, 0 };
+
+        // computing lines' directions
         float dP1P2, dP1P3;
 
         // http://en.wikipedia.org/wiki/Slope
@@ -323,13 +398,15 @@ public:
         {
             for(auto y = static_cast<uint16_t>(p1.y); y <= static_cast<uint16_t>(p3.y); y++)
             {
+                data.currentY = y;
+
                 if(y < p2.y)
                 {
-                    processScanline(y, p1, p3, p1, p2, c);
+                    processScanline(data, v1, v3, v1, v2, c);
                 }
                 else
                 {
-                    processScanline(y, p1, p3, p2, p3, c);
+                    processScanline(data, v1, v3, v2, v3, c);
                 }
             }
         }
@@ -348,22 +425,47 @@ public:
         {
             for(auto y = static_cast<uint16_t>(p1.y); y <= static_cast<uint16_t>(p3.y); y++)
             {
+                data.currentY = y;
+
                 if(y < p2.y)
                 {
-                    processScanline(y, p1, p2, p1, p3, c);
+                    processScanline(data, v1, v2, v1, v3, c);
                 }
                 else
                 {
-                    processScanline(y, p2, p3, p1, p3, c);
+                    processScanline(data, v2, v3, v1, v3, c);
                 }
             }
         }
     }
 
+
+    // Project takes some 3D coordinates and transform them
+    // in 2D coordinates using the transformation matrix
+    // It also transform the same coordinates and the normal to the vertex
+    // in the 3D world
+    // Note: "project" can be seen as a "vertex shader"
+    Vertex project(Vertex vertex, glm::mat4x4 mvMat, glm::mat4x4 projMat)
+    {
+        const auto viewport = glm::vec4(0, 0, m_winWidth, m_winHeight);
+
+        // transforming the coordinates into 2D space
+        const auto point2d = glm::project(vertex.coordinates, mvMat, projMat, viewport);
+
+        // transforming the coordinates & the normal to the vertex in the 3D world
+        const auto  point3dWorld = mvMat * glm::vec4(vertex.coordinates.x, vertex.coordinates.y, vertex.coordinates.z, 1.0f);
+        const auto normal3dWorld = mvMat * glm::vec4(vertex.normal.x, vertex.normal.y, vertex.normal.z, 1.0f);
+
+        return {
+            point2d,        // coordinate
+            point3dWorld,   // worldCoodinate
+            normal3dWorld,  // normal
+        };
+    }
+
     // The main method of the engine that re-compute each vertex projection during each frame
     void render(Camera camera, std::vector<Mesh> meshes)
     {
-        const auto viewport = glm::vec4(0, 0, m_winWidth, m_winHeight);
         const auto viewMat = glm::lookAtLH(camera.position, camera.target, glm::vec3(0,1,0));
         const auto projMat = glm::perspectiveFovLH(
             0.78f,
@@ -396,9 +498,9 @@ public:
                 const auto vertexB = mesh.vertices[face.b];
                 const auto vertexC = mesh.vertices[face.c];
 
-                const auto pixelA = glm::project(vertexA, mvMat, projMat, viewport);
-                const auto pixelB = glm::project(vertexB, mvMat, projMat, viewport);
-                const auto pixelC = glm::project(vertexC, mvMat, projMat, viewport);
+                const auto pixelA = project(vertexA, mvMat, projMat);
+                const auto pixelB = project(vertexB, mvMat, projMat);
+                const auto pixelC = project(vertexC, mvMat, projMat);
 
                 const bool alt = (faceIdx % 2 == 0);
                 drawTriangle(pixelA, pixelB, pixelC, {alt ? 255 : 0, 0, alt ? 0 : 255, 255});
@@ -443,42 +545,11 @@ int main(int /*argc*/, char **/*argv*/)
     Device device(640, 480);
 
     const Camera camera{
-        { 0, 0, 10 },
-        { 0, 0, 0 }
+        { 0, 0, 10 },   // position
+        { 0, 0, 0 }     // target
     };
 
-    const Mesh cube{
-        {0, 0, 0},  /* position */
-        {0, 0, 0},  /* rotation */
-        {           /* vertices */
-            {-1,  1,  1},   // 0
-            { 1,  1,  1},   // 1
-            {-1, -1,  1},   // 2
-            { 1, -1,  1},   // 3
-            {-1,  1, -1},   // 4
-            { 1,  1, -1},   // 5
-            { 1, -1, -1},   // 6
-            {-1, -1, -1}    // 7
-        },
-        {
-            {0, 1, 2},      // 0
-            {1, 2, 3},      // 1
-            {1, 3, 6},      // 2
-            {1, 5, 6},      // 3
-            {0, 1, 4},      // 4
-            {1, 4, 5},      // 5
-
-            {2, 3, 7},      // 6
-            {3, 6, 7},      // 7
-            {0, 2, 7},      // 8
-            {0, 4, 7},      // 9
-            {4, 5, 6},      // 10
-            {4, 6, 7}       // 11
-        }
-    };
-    //std::vector<Mesh> meshes = { cube };
-
-    std::vector<Mesh> meshes = loadJsonMesh("data/cube.babylon");
+    std::vector<Mesh> meshes = loadJsonMesh("data/scene.babylon");
 
     // Rendering loop
     while(true)
